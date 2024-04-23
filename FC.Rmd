@@ -1,0 +1,249 @@
+---
+title: "FeatureCounts"
+author: "Julia Louw"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Load Libraries
+```{r, message=FALSE}
+library(ggplot2); theme_set(theme_bw(base_size = 16)) 
+library(magrittr)
+library(DESeq2)
+library(dplyr)
+library(tidySummarizedExperiment)
+```
+
+### FeatureCounts
+```{bash, eval=FALSE}
+#! /bin/bash -l
+#SBATCH --partition=angsd_class
+#SBATCH --nodes=1
+#SBATCH --ntasks=4
+#SBATCH --cpus-per-task=8
+#SBATCH --job-name=fc_loop
+#SBATCH --time=04:00:00
+#SBATCH --mem=250G
+
+mamba activate angsd
+
+featureCounts -p --countReadPairs \
+	-a /athena/angsd/scratch/jal4037/angsd/project/genome_generate/gencode.v45.annotation.gtf \
+	-o fc_counts_new.txt \
+	/athena/angsd/scratch/jal4037/angsd/project/alns/*/*.bam
+```
+
+### Download files to local computer
+```{bash, eval=FALSE}
+scp -i ~/.ssh/cacprivatekey.txt jal4037@cayuga-login1.cac.cornell.edu:/athena/angsd/scratch/jal4037/angsd/project/featurecounts/fc_counts_new.txt ~/Desktop/angsd/project
+
+scp -i ~/.ssh/cacprivatekey.txt jal4037@cayuga-login1.cac.cornell.edu:/athena/angsd/scratch/jal4037/angsd/project/featurecounts/fc_counts_new.txt.summary ~/Desktop/angsd/project
+```
+
+### FeatureCounts results
+```{r}
+df_counts <- read.table(paste0("/Users/julialouw/Desktop/angsd/project/fc_counts_new.txt"), header = TRUE)
+str(df_counts)
+```
+
+### Sample names identifiers
+```{r}
+orig_names <- names(df_counts)
+
+new_names <- gsub("^.*alns\\.(.*?)_alignment\\..*$", "\\1", orig_names[2:length(orig_names)])
+names(df_counts)[2:length(orig_names)] <- new_names
+print(names(df_counts)[2:length(orig_names)])
+
+str(df_counts)
+```
+
+### Count data
+```{r}
+colnames(df_counts)
+
+row.names(df_counts) <- make.names(df_counts$Geneid)
+BC_gene_sample <- as.matrix(df_counts[, -c(1:6)])
+head(BC_gene_sample)
+
+colnames(BC_gene_sample)
+```
+
+### Column data
+```{r}
+df_coldata <- data.frame(
+  condition = gsub("_(res|sens)[0-5]+", "_\\1", colnames(BC_gene_sample)), 
+  row.names = colnames(BC_gene_sample)
+)
+
+new_coldata <- data.frame(
+  condition = gsub("_(res|sens)[0-5]+", "_\\1", colnames(BC_gene_sample)), 
+  subtype = gsub("^(HER2|LumB)_.*", "\\1", colnames(BC_gene_sample)),
+  sens_res = gsub("^.*_(sens|res)[0-9]+$", "\\1", colnames(BC_gene_sample)),
+  row.names = colnames(BC_gene_sample)
+)
+
+print(new_coldata)
+str(new_coldata)
+
+print(df_coldata)
+str(df_coldata)
+```
+
+### Row data
+```{r}
+df_rowdata <- df_counts[,1:6]
+
+#dds_BC <- DESeqDataSetFromMatrix(countData = BC_gene_sample, colData = df_coldata, rowData = df_rowdata, design = ~ condition)
+
+
+dds_BC <- DESeqDataSetFromMatrix(countData = BC_gene_sample, colData = new_coldata, rowData = df_rowdata, design = ~ condition)
+
+
+
+dds_BC
+```
+
+### Access counts
+```{r}
+head(counts(dds_BC))
+colSums(counts(dds_BC))
+
+sample_names <- colnames(counts(dds_BC))
+barplot(colSums(counts(dds_BC)), names.arg = sample_names, main = "Counts per Sample", cex.names = 0.7, las = 2)
+```
+
+I can see that there are higher counts for the samples `HER2_res1`, `HER2_res2`, `HER2_sens1`, `LumB_res1`, and `LumB_sens1`. 
+
+### Filter genes with no reads
+```{r}
+dim(dds_BC)
+keep_genes <- rowSums(counts(dds_BC)) > 0
+dds_BC <- dds_BC[keep_genes, ]
+dim(dds_BC)
+
+counts(dds_BC) %>% str
+assay(dds_BC) %>% str
+
+sample_names <- colnames(counts(dds_BC))
+barplot(colSums(counts(dds_BC)), names.arg = sample_names, main = "Counts per Sample", cex.names = 0.7, las = 2)
+```
+
+### Normalize for sequencing depth and RNA composition differences
+```{r}
+gm_mean <- function(x, na.rm=TRUE){ exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x)) }
+pseudo_refs <- counts(dds_BC) %>% apply(., 1, gm_mean)
+pseudo_ref_ratios <- counts(dds_BC) %>% apply(., 2, function(cts){ cts/pseudo_refs})
+counts(dds_BC)[1,]/pseudo_refs[1]
+pseudo_ref_ratios[1,]
+apply(pseudo_ref_ratios, 2, median)
+```
+
+```{r}
+dds_BC <- estimateSizeFactors(dds_BC)
+plot(sizeFactors(dds_BC), colSums(counts(dds_BC)), ylab = "Library sizes", xlab = "Size factors", cex = 0.8)
+```
+
+```{r}
+par(mfrow=c(1,2))
+counts.sf_normalized <- counts(dds_BC, normalized=TRUE)
+boxplot(counts(dds_BC), main = "Read counts only", cex = .6, names.arg = sample_names, cex.names = 0.3, las = 2)
+boxplot(counts.sf_normalized, main = "SF normalized", cex = .6, names.arg = sample_names, cex.names = 0.3, las = 2)
+```
+
+```{r}
+par(mfrow=c(1,2))
+
+boxplot(log2(counts(dds_BC) + 1), notch = TRUE, main = "Non-normalized read counts",
+        ylab="log2(read counts)", cex = 0.6)
+
+boxplot(log2(counts(dds_BC, normalized = TRUE) + 1), notch = TRUE,
+        main = "Size-factor-normalized read counts",
+        ylab = "log2(read counts)", cex = 0.6)
+```
+
+### Comparison of log normalized counts against each other
+```{r}
+log_counts <- log2(counts(dds_BC, normalized = FALSE) + 1)
+assay(dds_BC, "log_counts") <- log2(counts(dds_BC, normalized = FALSE) + 1)
+assay(dds_BC, "log_norm_counts") <- log2(counts(dds_BC, normalized=TRUE) + 1)
+```
+
+```{r}
+par(mfrow=c(2,2))
+
+dds_BC[, c("HER2_res1", "HER2_res2")] %>%
+  assay("log_norm_counts")  %>%
+  plot(cex=0.1, main="HER2_res1 vs. HER2_res2")
+
+dds_BC[, c("HER2_sens1", "HER2_sens2")] %>%
+  assay("log_norm_counts")  %>%
+  plot(cex=0.1, main="HER2_sens1 vs. HER2_sens2")
+
+dds_BC[, c("LumB_res1", "LumB_res2")] %>%
+  assay("log_norm_counts")  %>%
+  plot(cex=0.1, main="LumB_sens1 vs. LumB_sens2")
+
+dds_BC[, c("LumB_sens1", "LumB_sens2")] %>%
+  assay("log_norm_counts")  %>%
+  plot(cex=0.1, main="LumB_sens1 vs. LumB_sens2")
+```
+
+```{r}
+par(mfrow=c(1,1))
+msd_plot <- vsn::meanSdPlot(assay(dds_BC, "log_norm_counts"), ranks=FALSE, plot = FALSE)
+
+msd_plot$gg + labs(title="Sequencing depth normalized log2(read counts)", x="Mean", y="Standard deviation") + coord_cartesian(ylim = c(0,6))
+```
+
+### Reducing dependence of variance of the mean
+```{r}
+dst_rlog <- rlog(dds_BC, blind = TRUE)
+
+par(mfrow=c(1,2))
+
+plot(assay(dds_BC, "log_norm_counts")[,1:2], cex=.1, main="Size factor and\nlog2-transformed")
+
+plot(assay(dst_rlog)[,1:2], cex=.1, main="rlog transformed", xlab=colnames(assay(dst_rlog[,1])), ylab=colnames(assay(dst_rlog[,2])) )
+```
+
+```{r}
+rlog_norm_counts <- assay(dst_rlog)
+
+msd_plot <- vsn::meanSdPlot(assay(dst_rlog), ranks=FALSE, plot = FALSE)
+
+msd_plot$gg + labs(title="Following rlog transformation", x="Mean", y="Standard deviation") + coord_cartesian(ylim = c(0,6))
+```
+
+### Bioconductor tidy
+```{r}
+dds_BC %>%
+  group_by(.sample, sizeFactor, condition) %>%
+  summarize(library_size=sum(counts), .groups = 'drop') %>%
+  ggplot(aes(x=library_size, y=sizeFactor, color=condition)) +
+  geom_point(size=3) +
+  labs(x="Library size", y="Size factor", color="Genotype")
+```
+
+```{r}
+dds_BC %>%
+  ggplot(aes(x=log_counts, group=.sample, color=condition)) + 
+  geom_density() +
+  labs(x="Log counts", y="Density (genes)", color="Genotype")
+```
+
+```{r}
+dds_BC %>%
+  ggplot(aes(x=log_norm_counts, group=.sample, color=condition)) + 
+  geom_density() +
+  labs(x="Log counts", y="Density (genes)", color="Genotype")
+```
+
+```{r}
+save.image(file = "BC.RData")
+```
+
+
+

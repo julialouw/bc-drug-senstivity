@@ -1,0 +1,121 @@
+---
+title: "bcgsea"
+author: "Julia Louw"
+date: "2024-04-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(DESeq2)
+library(tidyverse)
+library(magrittr)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(biomaRt)
+library(clusterProfiler)
+library(ggplot2)
+library(ggrepel)
+
+library(fgsea)
+```
+
+```{r}
+load("DGE_results.RData")
+ls()
+```
+
+```{r}
+gene_ids_her2_trimmed <- sub("\\..*$", "", rownames(contrast_her2))
+
+gene_ids_lumb_trimmed <- sub("\\..*$", "", rownames(contrast_lumb))
+
+rownames(contrast_her2) <- gene_ids_her2_trimmed
+rownames(contrast_lumb) <- gene_ids_lumb_trimmed
+
+entrez_ids_her2 <- getBM(attributes = "entrezgene_id", 
+                         filters = "ensembl_gene_id", 
+                         values = gene_ids_her2_trimmed, 
+                         mart = ensembl_dataset)
+
+entrez_ids_lumb <- getBM(attributes = "entrezgene_id", 
+                         filters = "ensembl_gene_id", 
+                         values = gene_ids_lumb_trimmed, 
+                         mart = ensembl_dataset)
+```
+
+```{r}
+her2_gsea <- contrast_her2$log2FoldChange
+
+lumb_gsea <- contrast_her2$log2FoldChange
+
+```
+
+```{r}
+gmt = "c6.all.v2023.2.Hs.symbols.gmt"
+gmt_path <- gmtPathways(gmt)
+
+
+gene_symbs_her2 <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"), 
+                         filters = "ensembl_gene_id", 
+                         values = rownames(contrast_her2), 
+                         mart = ensembl_dataset)
+
+
+gene_symbs_lumb <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"), 
+                         filters = "ensembl_gene_id", 
+                         values = rownames(contrast_lumb), 
+                         mart = ensembl_dataset)
+
+names(her2_gsea) <- gene_symbols_her2$hgnc_symbol
+names(lumb_gsea) <- gene_symbols_lumb$hgnc_symbol
+
+head(her2_gsea)
+head(lumb_gsea)
+
+```
+```{r}
+her2_gsea_results <- fgsea(pathways = gmt_path, stats = her2_gsea)
+her2_gsea_results
+
+lumb_gsea_results <- fgsea(pathways = gmt_path, stats = lumb_gsea)
+lumb_gsea_results
+```
+
+```{r}
+her2_filt <- subset(her2_gsea_results, pval<0.05)
+her2_filt
+
+lumb_filt <- subset(lumb_gsea_results, pval<0.05)
+lumb_filt
+```
+```{r}
+gmt_pt2 <- "c4.all.v2023.2.Hs.symbols.gmt"
+gmt2_path <- gmtPathways(gmt_pt2)
+
+fgsea_her2_pt2 <- fgsea(pathways = gmt2_path, stats = her2_gsea)
+fgsea_lumb_pt2 <- fgsea(pathways = gmt2_path, stats = lumb_gsea)
+
+filt_her2 <- subset(fgsea_her2_pt2, pval < 0.05)
+filt_lumb <- subset(fgsea_lumb_pt2, pval < 0.05)
+```
+```{r}
+
+
+filt_her2
+```
+```{r}
+gmt_3 <- "c2.all.v2023.2.Hs.symbols.gmt"
+
+gmt3path <- gmtPathways(gmt_3)
+
+her2_3 <- fgsea(gmt3path, her2_gsea)
+lumb_3 <- fgsea(gmt3path, lumb_gsea)
+
+her2_3 <- subset(her2_3, pval < 0.05)
+lumb_3 <- subset(lumb_3, pval < 0.05)
+
+her2_3[c(1:5), ]
+lumb_3[c(1:5), ]
+```
